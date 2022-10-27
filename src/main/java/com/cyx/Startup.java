@@ -60,68 +60,61 @@ public class Startup {
                 pathStream.forEach(p -> {
                     try {
                         File packageFile = p.toFile();
-                        if (!caches.contains(packageFile.toString())) {
-                            log.info("pushing {}", packageFile);
-                            @SuppressWarnings("unchecked") Map<String, Object> pkgObj = json.readValue(packageFile, Map.class);
-                            boolean changed = false;
-                            if (pkgObj.containsKey("name") && pkgObj.containsKey("version")) {
+                        log.info("pushing {}", packageFile);
+                        @SuppressWarnings("unchecked") Map<String, Object> pkgObj = json.readValue(packageFile, Map.class);
+                        boolean changed = false;
+                        if (pkgObj.containsKey("name") && pkgObj.containsKey("version")) {
 
-                                String nv = pkgObj.get("name") + "@" + pkgObj.get("version");
+                            String nv = pkgObj.get("name") + "@" + pkgObj.get("version");
 
-                                if (!caches.contains(nv)) {
-                                    if (pkgObj.containsKey("scripts")) {
-                                        pkgObj.put("scripts", Collections.emptyMap());
-                                        changed = true;
-                                    }
-                                    if (pkgObj.containsKey("publishConfig")) {
-                                        pkgObj.put("publishConfig", Collections.emptyMap());
-                                        changed = true;
-                                    }
-                                    if (changed) {
-                                        writer.writeValue(packageFile, pkgObj);
-                                    }
-                                    posix.chdir(p.getParent().toString());
-                                    Thread.sleep(100);
-                                    Process process = runtime.exec("npm publish");
-                                    if (process.isAlive()) {
-                                        new Thread(() -> {
-                                            InputStream infoIn = process.getInputStream();
-                                            if (infoIn != null) {
-                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(infoIn)))) {
-                                                    String line;
-                                                    boolean read = false;
-                                                    while ((line = reader.readLine()) != null) {
-                                                        read = true;
-                                                        if (line.contains("+")) {
-                                                            caches.add(nv);
-                                                            unpublished.remove(nv);
-                                                        }
-                                                        Printer.println(line, Color.DARK_PURPLE);
-                                                    }
-                                                    if (!read) {
-                                                        unpublished.add(nv);
-                                                        Printer.println("- " + nv + " (unpublished)", Color.SILVER);
-                                                    }
-                                                } catch (Exception e) {
-                                                    log.error(e.toString());
-                                                }
-                                            }
-                                            InputStream errorIn = process.getErrorStream();
-                                            if (errorIn != null) {
-                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(errorIn)))) {
-                                                    String line;
-                                                    while ((line = reader.readLine()) != null) {
-                                                        log.debug(line);
-                                                    }
-                                                } catch (Exception e) {
-                                                    log.error(e.toString());
-                                                }
-                                            }
-                                            process.destroy();
-                                        }).start();
-                                    }
-                                    Thread.sleep(1000);
+                            if (!caches.contains(nv)) {
+                                if (pkgObj.containsKey("scripts")) {
+                                    pkgObj.put("scripts", Collections.emptyMap());
+                                    changed = true;
                                 }
+                                if (pkgObj.containsKey("publishConfig")) {
+                                    pkgObj.put("publishConfig", Collections.emptyMap());
+                                    changed = true;
+                                }
+                                if (changed) {
+                                    writer.writeValue(packageFile, pkgObj);
+                                }
+                                posix.chdir(p.getParent().toString());
+                                Thread.sleep(100);
+                                Process process = runtime.exec("npm publish");
+                                if (process.isAlive()) {
+                                    new Thread(() -> {
+                                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
+                                            String line;
+                                            boolean read = false;
+                                            while ((line = reader.readLine()) != null) {
+                                                read = true;
+                                                if (line.contains("+")) {
+                                                    caches.add(nv);
+                                                    unpublished.remove(nv);
+                                                }
+                                                Printer.println(line, Color.DARK_PURPLE);
+                                            }
+                                            if (!read) {
+                                                unpublished.add(nv);
+                                                Printer.println("- " + nv + " (unpublished)", Color.SILVER);
+                                            }
+                                        } catch (Exception e) {
+                                            log.error(e.toString());
+                                        }
+
+                                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
+                                            String line;
+                                            while ((line = reader.readLine()) != null) {
+                                                log.debug(line);
+                                            }
+                                        } catch (Exception e) {
+                                            log.error(e.toString());
+                                        }
+                                        process.destroy();
+                                    }).start();
+                                }
+                                Thread.sleep(1000);
                             }
                         }
                     } catch (IOException | InterruptedException e) {
