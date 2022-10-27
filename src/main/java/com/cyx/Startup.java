@@ -2,55 +2,54 @@ package com.cyx;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
+import com.github.chengyuxing.common.DataRow;
 import com.github.chengyuxing.common.console.Color;
 import com.github.chengyuxing.common.console.Printer;
+import com.github.chengyuxing.sql.Args;
+import com.github.chengyuxing.sql.BakiDao;
+import com.github.chengyuxing.sql.XQLFileManager;
+import com.zaxxer.hikari.HikariDataSource;
 import jnr.posix.POSIX;
 import jnr.posix.POSIXFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
-import java.util.*;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class Startup {
     static final Logger log = LoggerFactory.getLogger("npm_publish_app");
 
     public static void main(String[] args) throws IOException {
+        String userHome = System.getProperty("user.home");
         if (args.length > 0) {
+            System.out.println("init...");
+            HikariDataSource ds = new HikariDataSource();
+            ds.setJdbcUrl("jdbc:sqlite:" + userHome + File.separator + "npm_publish_cache.db");
+            BakiDao bakiDao = new BakiDao(ds);
+            bakiDao.setCheckParameterType(false);
+            XQLFileManager xqlFileManager = new XQLFileManager();
+            xqlFileManager.setDelimiter(";;");
+            xqlFileManager.add("data", "data.sql");
+            xqlFileManager.init();
+            bakiDao.setXqlFileManager(xqlFileManager);
 
-            Set<String> caches = new HashSet<>();
-            Set<String> unpublished = new HashSet<>();
+            bakiDao.batchExecute(xqlFileManager.get("data.create_table").split(";"));
 
-            String userHome = System.getProperty("user.home");
-
-            File publishedCache = new File(userHome + File.separator + "npm_published.cache");
-            if (publishedCache.exists()) {
-                try (Stream<String> ls = Files.lines(publishedCache.toPath(), StandardCharsets.UTF_8)) {
-                    ls.forEach(caches::add);
-                }
+            List<DataRow> allCache;
+            try (Stream<DataRow> s = bakiDao.query("&data.all").stream()) {
+                allCache = s//.map(d -> d.getString("name") + "@" + d.getString("version"))
+                        .collect(Collectors.toList());
             }
 
-            File unpublishedCache = new File(userHome + File.separator + "npm_unpublished.cache");
-            if (unpublishedCache.exists()) {
-                try (Stream<String> ls = Files.lines(unpublishedCache.toPath(), StandardCharsets.UTF_8)) {
-                    ls.forEach(unpublished::add);
-                }
-            }
-
-            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                try {
-                    Files.write(publishedCache.toPath(), caches, StandardCharsets.UTF_8, StandardOpenOption.CREATE);
-                    Files.write(unpublishedCache.toPath(), unpublished, StandardCharsets.UTF_8, StandardOpenOption.CREATE);
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
-            }));
+            Runtime.getRuntime().addShutdownHook(new Thread(ds::close));
 
             ObjectMapper json = new ObjectMapper();
             ObjectWriter writer = json.writerWithDefaultPrettyPrinter();
@@ -64,10 +63,12 @@ public class Startup {
                         @SuppressWarnings("unchecked") Map<String, Object> pkgObj = json.readValue(packageFile, Map.class);
                         boolean changed = false;
                         if (pkgObj.containsKey("name") && pkgObj.containsKey("version")) {
-
-                            String nv = pkgObj.get("name") + "@" + pkgObj.get("version");
-
-                            if (!caches.contains(nv)) {
+                            String name = pkgObj.get("name").toString();
+                            String version = pkgObj.get("version").toString();
+                            DataRow current = allCache.stream()
+                                    .filter(d -> d.getString("name").equals(name) && d.getString("version").equals(version))
+                                    .findFirst().orElse(DataRow.empty());
+                            if (current.isEmpty() || current.getInt("publish") == 0) {
                                 if (pkgObj.containsKey("scripts")) {
                                     pkgObj.put("scripts", Collections.emptyMap());
                                     changed = true;
@@ -81,7 +82,12 @@ public class Startup {
                                 }
                                 posix.chdir(p.getParent().toString());
                                 Thread.sleep(100);
-                                Process process = runtime.exec("npm publish");
+                                String registry = "";
+                                if (args.length > 1) {
+                                    registry = " --registry " + args[1];
+                                }
+                                Process process = runtime.exec("npm publish" + registry);
+//                                Process process = runtime.exec("pwd");
                                 if (process.isAlive()) {
                                     new Thread(() -> {
                                         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
@@ -90,14 +96,24 @@ public class Startup {
                                             while ((line = reader.readLine()) != null) {
                                                 read = true;
                                                 if (line.contains("+")) {
-                                                    caches.add(nv);
-                                                    unpublished.remove(nv);
+                                                    if (current.isEmpty()) {
+                                                        DataRow insert = DataRow.fromPair("name", name, "version", version, "publish", 1);
+                                                        bakiDao.insert("record").save(insert);
+                                                        allCache.add(insert);
+                                                    } else {
+                                                        bakiDao.update("record", "id = :id")
+                                                                .save(Args.create("id", current.get("id"), "publish", 1));
+                                                        current.put("publish", 1);
+                                                    }
                                                 }
                                                 Printer.println(line, Color.DARK_PURPLE);
                                             }
                                             if (!read) {
-                                                unpublished.add(nv);
-                                                Printer.println("- " + nv + " (unpublished)", Color.SILVER);
+                                                if (current.isEmpty()) {
+                                                    bakiDao.insert("record").save(Args.create("name", name, "version", version, "publish", 0));
+                                                    allCache.add(DataRow.fromPair("name", name, "version", version, "publish", 0));
+                                                }
+                                                Printer.println("- " + name + "@" + version + " (unpublished)", Color.SILVER);
                                             }
                                         } catch (Exception e) {
                                             log.error(e.toString());
@@ -126,7 +142,10 @@ public class Startup {
                 System.exit(0);
             }
         } else {
-            System.out.println("arg1 'node_modules' root path is required!");
+            System.out.println("npm publish app\n" +
+                    "cache file is " + userHome + File.separator + "npm_publish_cache.db (do not delete!)");
+            Printer.println("arg1:\tnode_modules root path\te.g. ...myapp/node_modules\n" +
+                    "arg2:\tyour npm registry\te.g. http://localhost:4873", Color.CYAN);
         }
     }
 }
