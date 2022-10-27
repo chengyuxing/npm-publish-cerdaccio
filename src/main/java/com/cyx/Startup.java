@@ -59,7 +59,6 @@ public class Startup {
                 pathStream.forEach(p -> {
                     try {
                         File packageFile = p.toFile();
-                        log.info("pushing {}", packageFile);
                         @SuppressWarnings("unchecked") Map<String, Object> pkgObj = json.readValue(packageFile, Map.class);
                         boolean changed = false;
                         if (pkgObj.containsKey("name") && pkgObj.containsKey("version")) {
@@ -69,6 +68,7 @@ public class Startup {
                                     .filter(d -> d.getString("name").equals(name) && d.getString("version").equals(version))
                                     .findFirst().orElse(DataRow.empty());
                             if (current.isEmpty() || current.getInt("publish") == 0) {
+                                log.info("pushing {}", packageFile);
                                 if (pkgObj.containsKey("scripts")) {
                                     pkgObj.put("scripts", Collections.emptyMap());
                                     changed = true;
