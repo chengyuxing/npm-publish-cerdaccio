@@ -61,7 +61,6 @@ public class Startup {
                             try {
                                 File packageFile = p.toFile();
                                 @SuppressWarnings("unchecked") Map<String, Object> pkgObj = json.readValue(packageFile, Map.class);
-                                boolean changed = false;
                                 if (pkgObj.containsKey("name") && pkgObj.containsKey("version")) {
                                     String name = pkgObj.get("name").toString();
                                     String version = pkgObj.get("version").toString();
@@ -69,6 +68,7 @@ public class Startup {
                                             .filter(d -> d.getString("name").equals(name) && d.getString("version").equals(version))
                                             .findFirst().orElse(DataRow.empty());
                                     if (current.isEmpty() || current.getInt("publish") == 0) {
+                                        boolean changed = false;
                                         log.info("pushing {}", packageFile);
                                         if (pkgObj.containsKey("scripts")) {
                                             pkgObj.put("scripts", Collections.emptyMap());
@@ -95,8 +95,8 @@ public class Startup {
                                                     String line;
                                                     boolean read = false;
                                                     while ((line = reader.readLine()) != null) {
-                                                        read = true;
                                                         if (line.contains("+")) {
+                                                            read = true;
                                                             if (current.isEmpty()) {
                                                                 DataRow insert = DataRow.fromPair("name", name, "version", version, "publish", 1);
                                                                 bakiDao.insert("record").save(insert);
