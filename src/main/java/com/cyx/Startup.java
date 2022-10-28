@@ -55,88 +55,89 @@ public class Startup {
             ObjectWriter writer = json.writerWithDefaultPrettyPrinter();
             POSIX posix = POSIXFactory.getPOSIX();
             Runtime runtime = Runtime.getRuntime();
-            try (Stream<Path> pathStream = Files.find(Paths.get(args[0]), 100, (p, a) -> !a.isDirectory() && p.toString().endsWith("package.json"))) {
-                pathStream.forEach(p -> {
-                    try {
-                        File packageFile = p.toFile();
-                        @SuppressWarnings("unchecked") Map<String, Object> pkgObj = json.readValue(packageFile, Map.class);
-                        boolean changed = false;
-                        if (pkgObj.containsKey("name") && pkgObj.containsKey("version")) {
-                            String name = pkgObj.get("name").toString();
-                            String version = pkgObj.get("version").toString();
-                            DataRow current = allCache.stream()
-                                    .filter(d -> d.getString("name").equals(name) && d.getString("version").equals(version))
-                                    .findFirst().orElse(DataRow.empty());
-                            if (current.isEmpty() || current.getInt("publish") == 0) {
-                                log.info("pushing {}", packageFile);
-                                if (pkgObj.containsKey("scripts")) {
-                                    pkgObj.put("scripts", Collections.emptyMap());
-                                    changed = true;
-                                }
-                                if (pkgObj.containsKey("publishConfig")) {
-                                    pkgObj.put("publishConfig", Collections.emptyMap());
-                                    changed = true;
-                                }
-                                if (changed) {
-                                    writer.writeValue(packageFile, pkgObj);
-                                }
-                                posix.chdir(p.getParent().toString());
-                                Thread.sleep(100);
-                                String registry = "";
-                                if (args.length > 1) {
-                                    registry = " --registry " + args[1];
-                                }
-                                Process process = runtime.exec("npm publish" + registry);
+            try (Stream<Path> pathStream = Files.find(Paths.get(args[0]), 10, (p, a) -> !a.isDirectory() && p.toString().endsWith("package.json"))) {
+                pathStream.filter(p -> !p.toString().endsWith("dist" + File.separator + "package.json"))
+                        .forEach(p -> {
+                            try {
+                                File packageFile = p.toFile();
+                                @SuppressWarnings("unchecked") Map<String, Object> pkgObj = json.readValue(packageFile, Map.class);
+                                boolean changed = false;
+                                if (pkgObj.containsKey("name") && pkgObj.containsKey("version")) {
+                                    String name = pkgObj.get("name").toString();
+                                    String version = pkgObj.get("version").toString();
+                                    DataRow current = allCache.stream()
+                                            .filter(d -> d.getString("name").equals(name) && d.getString("version").equals(version))
+                                            .findFirst().orElse(DataRow.empty());
+                                    if (current.isEmpty() || current.getInt("publish") == 0) {
+                                        log.info("pushing {}", packageFile);
+                                        if (pkgObj.containsKey("scripts")) {
+                                            pkgObj.put("scripts", Collections.emptyMap());
+                                            changed = true;
+                                        }
+                                        if (pkgObj.containsKey("publishConfig")) {
+                                            pkgObj.put("publishConfig", Collections.emptyMap());
+                                            changed = true;
+                                        }
+                                        if (changed) {
+                                            writer.writeValue(packageFile, pkgObj);
+                                        }
+                                        posix.chdir(p.getParent().toString());
+                                        Thread.sleep(100);
+                                        String registry = "";
+                                        if (args.length > 1) {
+                                            registry = " --registry " + args[1];
+                                        }
+                                        Process process = runtime.exec("npm publish" + registry);
 //                                Process process = runtime.exec("pwd");
-                                if (process.isAlive()) {
-                                    new Thread(() -> {
-                                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
-                                            String line;
-                                            boolean read = false;
-                                            while ((line = reader.readLine()) != null) {
-                                                read = true;
-                                                if (line.contains("+")) {
-                                                    if (current.isEmpty()) {
-                                                        DataRow insert = DataRow.fromPair("name", name, "version", version, "publish", 1);
-                                                        bakiDao.insert("record").save(insert);
-                                                        allCache.add(insert);
-                                                    } else {
-                                                        bakiDao.update("record", "id = :id")
-                                                                .save(Args.create("id", current.get("id"), "publish", 1));
-                                                        current.put("publish", 1);
+                                        if (process.isAlive()) {
+                                            new Thread(() -> {
+                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
+                                                    String line;
+                                                    boolean read = false;
+                                                    while ((line = reader.readLine()) != null) {
+                                                        read = true;
+                                                        if (line.contains("+")) {
+                                                            if (current.isEmpty()) {
+                                                                DataRow insert = DataRow.fromPair("name", name, "version", version, "publish", 1);
+                                                                bakiDao.insert("record").save(insert);
+                                                                allCache.add(insert);
+                                                            } else {
+                                                                bakiDao.update("record", "id = :id")
+                                                                        .save(Args.create("id", current.get("id"), "publish", 1));
+                                                                current.put("publish", 1);
+                                                            }
+                                                        }
+                                                        Printer.println(line, Color.DARK_PURPLE);
                                                     }
+                                                    if (!read) {
+                                                        if (current.isEmpty()) {
+                                                            bakiDao.insert("record").save(Args.create("name", name, "version", version, "publish", 0));
+                                                            allCache.add(DataRow.fromPair("name", name, "version", version, "publish", 0));
+                                                        }
+                                                        Printer.println("- " + name + "@" + version + " (unpublished)", Color.SILVER);
+                                                    }
+                                                } catch (Exception e) {
+                                                    log.error(e.toString());
                                                 }
-                                                Printer.println(line, Color.DARK_PURPLE);
-                                            }
-                                            if (!read) {
-                                                if (current.isEmpty()) {
-                                                    bakiDao.insert("record").save(Args.create("name", name, "version", version, "publish", 0));
-                                                    allCache.add(DataRow.fromPair("name", name, "version", version, "publish", 0));
-                                                }
-                                                Printer.println("- " + name + "@" + version + " (unpublished)", Color.SILVER);
-                                            }
-                                        } catch (Exception e) {
-                                            log.error(e.toString());
-                                        }
 
-                                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
-                                            String line;
-                                            while ((line = reader.readLine()) != null) {
-                                                log.debug(line);
-                                            }
-                                        } catch (Exception e) {
-                                            log.error(e.toString());
+                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
+                                                    String line;
+                                                    while ((line = reader.readLine()) != null) {
+                                                        log.debug(line);
+                                                    }
+                                                } catch (Exception e) {
+                                                    log.error(e.toString());
+                                                }
+                                                process.destroy();
+                                            }).start();
                                         }
-                                        process.destroy();
-                                    }).start();
+                                        Thread.sleep(1000);
+                                    }
                                 }
-                                Thread.sleep(1000);
+                            } catch (IOException | InterruptedException e) {
+                                log.error(e.toString());
                             }
-                        }
-                    } catch (IOException | InterruptedException e) {
-                        log.error(e.toString());
-                    }
-                });
+                        });
                 System.out.println("publish done!");
                 System.out.println(">>>> see log: " + userHome + File.separator + "npm_publish.log");
                 System.exit(0);
