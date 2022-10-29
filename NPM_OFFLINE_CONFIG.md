@@ -181,7 +181,7 @@ $ npm install -g pm2
 
 ## 推荐的必要系统级依赖
 
-`packagee.json`
+`package.json`
 
 ```json
 "devDependencies": {
