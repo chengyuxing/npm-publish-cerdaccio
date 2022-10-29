@@ -118,7 +118,7 @@ $ npm install -g pm2
 
 2. `.../verdaccio/`**`storage`**；
 
-3. 全局 `node_modules` 下安装的 **`verdaccio`**安装文件夹；
+3. 全局 `node_modules` 下安装的 **`verdaccio`** 安装文件夹；
 
 > 拷贝黑体字加粗部分即可。
 
