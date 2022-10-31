@@ -45,8 +45,7 @@ public class Startup {
 
             List<DataRow> allCache;
             try (Stream<DataRow> s = bakiDao.query("&data.all").stream()) {
-                allCache = s//.map(d -> d.getString("name") + "@" + d.getString("version"))
-                        .collect(Collectors.toList());
+                allCache = s.collect(Collectors.toList());
             }
 
             Runtime.getRuntime().addShutdownHook(new Thread(ds::close));
@@ -88,50 +87,56 @@ public class Startup {
                                             registry = " --registry " + args[1];
                                         }
                                         Process process = runtime.exec("npm publish" + registry);
-//                                Process process = runtime.exec("pwd");
+                                        //Process process = runtime.exec("pwd");
                                         if (process.isAlive()) {
-                                            new Thread(() -> {
-                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
-                                                    String line;
-                                                    boolean read = false;
-                                                    while ((line = reader.readLine()) != null) {
-                                                        if (line.contains("+")) {
-                                                            read = true;
-                                                            if (current.isEmpty()) {
-                                                                DataRow insert = DataRow.fromPair("name", name, "version", version, "publish", 1);
-                                                                bakiDao.insert("record").save(insert);
-                                                                allCache.add(insert);
-                                                            } else {
-                                                                bakiDao.update("record", "id = :id")
-                                                                        .save(Args.create("id", current.get("id"), "publish", 1));
-                                                                current.put("publish", 1);
-                                                            }
+                                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
+                                                String line;
+                                                while ((line = reader.readLine()) != null) {
+                                                    if (line.contains("+")) {
+                                                        if (current.isEmpty()) {
+                                                            DataRow insert = DataRow.fromPair("name", name, "version", version, "publish", 1);
+                                                            bakiDao.insert("record").save(insert);
+                                                            allCache.add(insert);
+                                                        } else {
+                                                            bakiDao.update("record", "id = :id")
+                                                                    .save(Args.create("id", current.get("id"), "publish", 1));
+                                                            current.put("publish", 1);
                                                         }
                                                         Printer.println(line, Color.DARK_PURPLE);
                                                     }
-                                                    if (!read) {
-                                                        if (current.isEmpty()) {
-                                                            bakiDao.insert("record").save(Args.create("name", name, "version", version, "publish", 0));
-                                                            allCache.add(DataRow.fromPair("name", name, "version", version, "publish", 0));
-                                                        }
-                                                        Printer.println("- " + name + "@" + version + " (unpublished)", Color.SILVER);
-                                                    }
-                                                } catch (Exception e) {
-                                                    log.error(e.toString());
                                                 }
+                                            } catch (Exception e) {
+                                                log.error(e.toString());
+                                            }
 
-                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
-                                                    String line;
-                                                    while ((line = reader.readLine()) != null) {
-                                                        log.debug(line);
+                                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
+                                                String line;
+                                                boolean isExistingReason = false;
+                                                while ((line = reader.readLine()) != null) {
+                                                    if (line.contains("publish over existing version")) {
+                                                        isExistingReason = true;
+                                                        Printer.println("- " + name + "@" + version + " (Cannot publish over existing version)", Color.SILVER);
                                                     }
-                                                } catch (Exception e) {
-                                                    log.error(e.toString());
+                                                    log.debug(line);
                                                 }
-                                                process.destroy();
-                                            }).start();
+                                                if (!isExistingReason) {
+                                                    Printer.println("- " + name + "@" + version, Color.SILVER);
+                                                }
+                                                int published = isExistingReason ? 1 : 0;
+                                                if (current.isEmpty()) {
+                                                    bakiDao.insert("record").save(Args.create("name", name, "version", version, "publish", published));
+                                                    allCache.add(DataRow.fromPair("name", name, "version", version, "publish", published));
+                                                } else {
+                                                    bakiDao.update("record", "id = :id")
+                                                            .save(Args.create("id", current.get("id"), "publish", published));
+                                                    current.put("publish", published);
+                                                }
+                                            } catch (Exception e) {
+                                                log.error(e.toString());
+                                            }
+                                            process.destroy();
                                         }
-                                        Thread.sleep(1000);
+                                        Thread.sleep(500);
                                     }
                                 }
                             } catch (IOException | InterruptedException e) {
