@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectWriter;
 import com.github.chengyuxing.common.DataRow;
 import com.github.chengyuxing.common.console.Color;
 import com.github.chengyuxing.common.console.Printer;
-import com.github.chengyuxing.sql.Args;
 import com.github.chengyuxing.sql.BakiDao;
 import com.github.chengyuxing.sql.XQLFileManager;
 import com.zaxxer.hikari.HikariDataSource;
@@ -21,7 +20,6 @@ import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -44,9 +42,10 @@ public class Startup {
 
             bakiDao.batchExecute(xqlFileManager.get("data.create_table").split(";"));
 
-            List<DataRow> allCache;
+            List<NpmRecord> allCache;
             try (Stream<DataRow> s = bakiDao.query("&data.all").stream()) {
-                allCache = s.collect(Collectors.toList());
+                allCache = s.map(d -> d.toEntity(NpmRecord.class))
+                        .collect(Collectors.toList());
             }
 
             Runtime.getRuntime().addShutdownHook(new Thread(ds::close));
@@ -55,7 +54,6 @@ public class Startup {
             ObjectWriter writer = json.writerWithDefaultPrettyPrinter();
             POSIX posix = POSIXFactory.getPOSIX();
             Runtime runtime = Runtime.getRuntime();
-            ReentrantLock lock = new ReentrantLock();
             try (Stream<Path> pathStream = Files.find(Paths.get(args[0]), 10, (p, a) -> !a.isDirectory() && p.toString().endsWith("package.json"))) {
                 pathStream.filter(p -> !p.toString().endsWith("dist" + File.separator + "package.json"))
                         .forEach(p -> {
@@ -65,10 +63,9 @@ public class Startup {
                                 if (pkgObj.containsKey("name") && pkgObj.containsKey("version")) {
                                     String name = pkgObj.get("name").toString();
                                     String version = pkgObj.get("version").toString();
-                                    DataRow current = allCache.stream()
-                                            .filter(d -> d.getString("name").equals(name) && d.getString("version").equals(version))
-                                            .findFirst().orElse(DataRow.empty());
-                                    if (current.isEmpty() || current.getInt("publish") == 0) {
+                                    int idx = allCache.indexOf(new NpmRecord(name, version));
+                                    if (idx == -1 || allCache.get(idx).getPublish().equals(0)) {
+                                        NpmRecord current = idx == -1 ? new NpmRecord(name, version) : allCache.get(idx);
                                         boolean changed = false;
                                         log.info("pushing {}", packageFile);
                                         if (pkgObj.containsKey("scripts")) {
@@ -89,68 +86,53 @@ public class Startup {
                                             registry = " --registry " + args[1];
                                         }
                                         Process process = runtime.exec("npm publish" + registry);
-                                        //Process process = runtime.exec("pwd");
-                                        if (process.isAlive()) {
-                                            new Thread(() -> {
-                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
-                                                    String line;
-                                                    while ((line = reader.readLine()) != null) {
-                                                        if (line.contains("+")) {
-                                                            try {
-                                                                lock.lock();
-                                                                if (current.isEmpty()) {
-                                                                    DataRow insert = DataRow.fromPair("name", name, "version", version, "publish", 1);
-                                                                    bakiDao.insert("record").save(insert);
-                                                                    allCache.add(insert);
-                                                                } else {
-                                                                    bakiDao.update("record", "id = :id")
-                                                                            .save(Args.create("id", current.get("id"), "publish", 1));
-                                                                    current.put("publish", 1);
-                                                                }
-                                                                Printer.println(line, Color.DARK_PURPLE);
-                                                            } finally {
-                                                                lock.unlock();
-                                                            }
-                                                        }
-                                                    }
-                                                } catch (Exception e) {
-                                                    log.error(e.toString());
-                                                }
-
-                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
-                                                    String line;
-                                                    boolean isExistingReason = false;
-                                                    while ((line = reader.readLine()) != null) {
-                                                        if (line.contains("publish over existing version")) {
-                                                            isExistingReason = true;
-                                                            Printer.println("- " + name + "@" + version + " (Cannot publish over existing version)", Color.SILVER);
-                                                        }
-                                                        log.debug(line);
-                                                    }
-                                                    if (!isExistingReason) {
-                                                        Printer.println("- " + name + "@" + version, Color.SILVER);
-                                                    }
-                                                    int published = isExistingReason ? 1 : 0;
-                                                    try {
-                                                        lock.lock();
-                                                        if (current.isEmpty()) {
-                                                            bakiDao.insert("record").save(Args.create("name", name, "version", version, "publish", published));
-                                                            allCache.add(DataRow.fromPair("name", name, "version", version, "publish", published));
+                                        // Process process = runtime.exec("pwd");
+                                        new Thread(() -> {
+                                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
+                                                String line;
+                                                while ((line = reader.readLine()) != null) {
+                                                    if (line.contains("+")) {
+                                                        NpmRecord npmRecord = new NpmRecord(name, version);
+                                                        npmRecord.setPublish(1);
+                                                        if (current.getId() == null) {
+                                                            bakiDao.insert("record").save(DataRow.fromEntity(npmRecord));
                                                         } else {
-                                                            bakiDao.update("record", "id = :id")
-                                                                    .save(Args.create("id", current.get("id"), "publish", published));
-                                                            current.put("publish", published);
+                                                            bakiDao.update("record", "id = :id").save(DataRow.fromEntity(npmRecord));
                                                         }
-                                                    } finally {
-                                                        lock.unlock();
+                                                        Printer.println(line, Color.DARK_PURPLE);
                                                     }
-                                                } catch (Exception e) {
-                                                    log.error(e.toString());
                                                 }
-                                                process.destroy();
-                                            }).start();
-                                        }
-                                        Thread.sleep(500);
+                                            } catch (Exception e) {
+                                                log.error(e.toString());
+                                            }
+
+                                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
+                                                String line;
+                                                boolean isExistingReason = false;
+                                                while ((line = reader.readLine()) != null) {
+                                                    if (line.contains("publish over existing version")) {
+                                                        isExistingReason = true;
+                                                        Printer.println("- " + name + "@" + version + " (Cannot publish over existing version)", Color.SILVER);
+                                                    }
+                                                    log.debug(line);
+                                                }
+                                                if (!isExistingReason) {
+                                                    Printer.println("- " + name + "@" + version, Color.SILVER);
+                                                }
+                                                int published = isExistingReason ? 1 : 0;
+                                                NpmRecord record = new NpmRecord(name, version);
+                                                record.setPublish(published);
+                                                if (current.getId() == null) {
+                                                    bakiDao.insert("record").save(DataRow.fromEntity(record));
+                                                } else {
+                                                    bakiDao.update("record", "id = :id").save(DataRow.fromEntity(record));
+                                                }
+                                            } catch (Exception e) {
+                                                log.error(e.toString());
+                                            }
+                                            process.destroy();
+                                        }).start();
+                                        Thread.sleep(1000);
                                     }
                                 }
                             } catch (IOException | InterruptedException e) {

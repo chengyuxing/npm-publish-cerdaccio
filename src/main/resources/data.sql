@@ -24,7 +24,7 @@ create index if not exists record_version_index
 ;;
 
 /*[all]*/
-select id, name, version, publish from record where publish = 0;;
+select id, name, version, publish from record;;
 
 /*[get_by_name]*/
 select id, name, version, publish from record where name like '%' || :name || '%' order by name,version desc;;
