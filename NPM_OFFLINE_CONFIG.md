@@ -118,9 +118,9 @@ $ npm install -g pm2
 
 2. `.../verdaccio/`**`storage`**；
 
-3. 全局 `node_modules` 下安装的 **`verdaccio`**安装文件夹；
+3. 全局 `node_modules` 下安装的 **`verdaccio`** 安装文件夹；
 
-> 拷贝黑体字部分即可。
+> 拷贝黑体字加粗部分即可。
 
 ### 内网配置
 
@@ -181,7 +181,7 @@ $ npm install -g pm2
 
 ## 推荐的必要系统级依赖
 
-`packagee.json`
+`package.json`
 
 ```json
 "devDependencies": {
