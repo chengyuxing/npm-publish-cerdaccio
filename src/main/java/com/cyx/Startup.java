@@ -88,6 +88,7 @@ public class Startup {
                                         Process process = runtime.exec("npm publish" + registry);
                                         // Process process = runtime.exec("pwd");
                                         new Thread(() -> {
+                                            boolean pushedSuccess = false;
                                             try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
                                                 String line;
                                                 while ((line = reader.readLine()) != null) {
@@ -100,35 +101,37 @@ public class Startup {
                                                             bakiDao.update("record", "id = :id").save(DataRow.fromEntity(npmRecord));
                                                         }
                                                         Printer.println(line, Color.DARK_PURPLE);
+                                                        pushedSuccess = true;
                                                     }
                                                 }
                                             } catch (Exception e) {
                                                 log.error(e.toString());
                                             }
-
-                                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
-                                                String line;
-                                                boolean isExistingReason = false;
-                                                while ((line = reader.readLine()) != null) {
-                                                    if (line.contains("publish over existing version")) {
-                                                        isExistingReason = true;
-                                                        Printer.println("- " + name + "@" + version + " (Cannot publish over existing version)", Color.SILVER);
+                                            if (!pushedSuccess) {
+                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
+                                                    String line;
+                                                    boolean isExistingReason = false;
+                                                    while ((line = reader.readLine()) != null) {
+                                                        if (line.contains("publish over existing version")) {
+                                                            isExistingReason = true;
+                                                            Printer.println("- " + name + "@" + version + " (Cannot publish over existing version)", Color.SILVER);
+                                                        }
+                                                        log.debug(line);
                                                     }
-                                                    log.debug(line);
+                                                    if (!isExistingReason) {
+                                                        Printer.println("- " + name + "@" + version, Color.SILVER);
+                                                    }
+                                                    int published = isExistingReason ? 1 : 0;
+                                                    NpmRecord record = new NpmRecord(name, version);
+                                                    record.setPublish(published);
+                                                    if (current.getId() == null) {
+                                                        bakiDao.insert("record").save(DataRow.fromEntity(record));
+                                                    } else {
+                                                        bakiDao.update("record", "id = :id").save(DataRow.fromEntity(record));
+                                                    }
+                                                } catch (Exception e) {
+                                                    log.error(e.toString());
                                                 }
-                                                if (!isExistingReason) {
-                                                    Printer.println("- " + name + "@" + version, Color.SILVER);
-                                                }
-                                                int published = isExistingReason ? 1 : 0;
-                                                NpmRecord record = new NpmRecord(name, version);
-                                                record.setPublish(published);
-                                                if (current.getId() == null) {
-                                                    bakiDao.insert("record").save(DataRow.fromEntity(record));
-                                                } else {
-                                                    bakiDao.update("record", "id = :id").save(DataRow.fromEntity(record));
-                                                }
-                                            } catch (Exception e) {
-                                                log.error(e.toString());
                                             }
                                             process.destroy();
                                         }).start();
