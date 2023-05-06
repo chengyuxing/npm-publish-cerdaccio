@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectWriter;
 import com.github.chengyuxing.common.DataRow;
 import com.github.chengyuxing.common.console.Color;
 import com.github.chengyuxing.common.console.Printer;
+import com.github.chengyuxing.common.utils.StringUtil;
 import com.github.chengyuxing.sql.BakiDao;
 import com.github.chengyuxing.sql.XQLFileManager;
 import com.zaxxer.hikari.HikariDataSource;
@@ -25,6 +26,7 @@ import java.util.stream.Stream;
 
 public class Startup {
     static final Logger log = LoggerFactory.getLogger("npm_publish_app");
+    static final boolean isWindows = StringUtil.containsIgnoreCase(System.getProperty("os.name"), "windows");
 
     public static void main(String[] args) throws IOException {
         String userHome = System.getProperty("user.home");
@@ -85,7 +87,11 @@ public class Startup {
                                         if (args.length > 1) {
                                             registry = " --registry " + args[1];
                                         }
-                                        Process process = runtime.exec("npm publish" + registry);
+                                        String cmdPrefix = "";
+                                        if (isWindows) {
+                                            cmdPrefix = "cmd /c ";
+                                        }
+                                        Process process = runtime.exec(cmdPrefix + "npm publish" + registry);
                                         // Process process = runtime.exec("pwd");
                                         new Thread(() -> {
                                             boolean pushedSuccess = false;
