@@ -9,8 +9,6 @@ import com.github.chengyuxing.common.utils.StringUtil;
 import com.github.chengyuxing.sql.BakiDao;
 import com.github.chengyuxing.sql.XQLFileManager;
 import com.zaxxer.hikari.HikariDataSource;
-import jnr.posix.POSIX;
-import jnr.posix.POSIXFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,6 +19,7 @@ import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.StringJoiner;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -54,7 +53,6 @@ public class Startup {
 
             ObjectMapper json = new ObjectMapper();
             ObjectWriter writer = json.writerWithDefaultPrettyPrinter();
-            POSIX posix = POSIXFactory.getPOSIX();
             Runtime runtime = Runtime.getRuntime();
             try (Stream<Path> pathStream = Files.find(Paths.get(args[0]), 10, (p, a) -> !a.isDirectory() && p.toString().endsWith("package.json"))) {
                 pathStream.filter(p -> !p.toString().endsWith("dist" + File.separator + "package.json"))
@@ -69,7 +67,7 @@ public class Startup {
                                     if (idx == -1 || allCache.get(idx).getPublish().equals(0)) {
                                         NpmRecord current = idx == -1 ? new NpmRecord(name, version) : allCache.get(idx);
                                         boolean changed = false;
-                                        log.info("pushing {}", packageFile);
+                                        log.info("start push {}", packageFile);
                                         if (pkgObj.containsKey("scripts")) {
                                             pkgObj.put("scripts", Collections.emptyMap());
                                             changed = true;
@@ -81,24 +79,25 @@ public class Startup {
                                         if (changed) {
                                             writer.writeValue(packageFile, pkgObj);
                                         }
-                                        posix.chdir(p.getParent().toString());
-                                        Thread.sleep(100);
-                                        String registry = "";
-                                        if (args.length > 1) {
-                                            registry = " --registry " + args[1];
-                                        }
-                                        String cmdPrefix = "";
-                                        if (isWindows) {
-                                            cmdPrefix = "cmd /c ";
-                                        }
-                                        Process process = runtime.exec(cmdPrefix + "npm publish" + registry);
-                                        // Process process = runtime.exec("pwd");
-                                        new Thread(() -> {
-                                            boolean pushedSuccess = false;
-                                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getInputStream())))) {
+                                        Thread.sleep(300);
+                                        String cmd = getCmd(args, p);
+                                        Process process = runtime.exec(cmd);
+                                        log.info("pushing {} by execute '{}'", packageFile, cmd);
+
+                                        boolean pushedSuccess = false;
+
+                                        // + name@version
+                                        InputStream infoInput = process.getInputStream();
+                                        // npm notice ...
+                                        // npm notice ...
+                                        InputStream errorInput = process.getErrorStream();
+
+                                        // if no content, it will be dead in this step.
+                                        if (infoInput.available() > 0) {
+                                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(infoInput)))) {
                                                 String line;
                                                 while ((line = reader.readLine()) != null) {
-                                                    if (line.contains("+")) {
+                                                    if (line.contains("+ ")) {
                                                         NpmRecord npmRecord = new NpmRecord(name, version);
                                                         npmRecord.setPublish(1);
                                                         if (current.getId() == null) {
@@ -113,35 +112,47 @@ public class Startup {
                                             } catch (Exception e) {
                                                 log.error(e.toString());
                                             }
-                                            if (!pushedSuccess) {
-                                                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(process.getErrorStream())))) {
-                                                    String line;
-                                                    boolean isExistingReason = false;
-                                                    while ((line = reader.readLine()) != null) {
-                                                        if (line.contains("publish over existing version")) {
-                                                            isExistingReason = true;
-                                                            Printer.println("- " + name + "@" + version + " (Cannot publish over existing version)", Color.SILVER);
-                                                        }
-                                                        log.debug(line);
+                                        }
+                                        // not really fail, maybe inputStream is empty.
+                                        if (!pushedSuccess) {
+                                            pushedSuccess = true;
+                                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(errorInput)))) {
+                                                String line;
+                                                StringJoiner sb = new StringJoiner("\n");
+                                                while ((line = reader.readLine()) != null) {
+                                                    if (line.contains("ERR!")) {
+                                                        pushedSuccess = false;
+                                                        sb.add(line);
                                                     }
-                                                    if (!isExistingReason) {
-                                                        Printer.println("- " + name + "@" + version, Color.SILVER);
-                                                    }
-                                                    int published = isExistingReason ? 1 : 0;
-                                                    NpmRecord record = new NpmRecord(name, version);
-                                                    record.setPublish(published);
-                                                    if (current.getId() == null) {
-                                                        bakiDao.insert("record").save(DataRow.fromEntity(record));
-                                                    } else {
-                                                        bakiDao.update("record", "id = :id").save(DataRow.fromEntity(record));
-                                                    }
-                                                } catch (Exception e) {
-                                                    log.error(e.toString());
+                                                    log.debug(line);
                                                 }
+                                                if (pushedSuccess) {
+                                                    Printer.println("+ " + name + "@" + version, Color.DARK_PURPLE);
+                                                } else {
+                                                    String error = sb.toString();
+                                                    String reason = "";
+
+                                                    if (error.contains("EPUBLISHCONFLICT") || error.contains("over existing version")) {
+                                                        reason = "(Cannot publish over existing version)";
+                                                    }
+
+                                                    Printer.println("- " + name + "@" + version + reason, Color.SILVER);
+                                                    if (reason.isEmpty()) {
+                                                        Printer.println(sb.toString(), Color.SILVER);
+                                                    }
+                                                }
+                                                int published = pushedSuccess ? 1 : 0;
+                                                NpmRecord record = new NpmRecord(name, version);
+                                                record.setPublish(published);
+                                                if (current.getId() == null) {
+                                                    bakiDao.insert("record").save(DataRow.fromEntity(record));
+                                                } else {
+                                                    bakiDao.update("record", "id = :id").save(DataRow.fromEntity(record));
+                                                }
+                                            } catch (Exception e) {
+                                                log.error(e.toString());
                                             }
-                                            process.destroy();
-                                        }).start();
-                                        Thread.sleep(1000);
+                                        }
                                     }
                                 }
                             } catch (IOException | InterruptedException e) {
@@ -158,5 +169,17 @@ public class Startup {
             Printer.println("arg1:\tnode_modules root path\te.g. ...myapp/node_modules\n" +
                     "arg2:\tyour npm registry\te.g. http://localhost:4873", Color.CYAN);
         }
+    }
+
+    private static String getCmd(String[] args, Path p) {
+        String registry = "";
+        if (args.length > 1) {
+            registry = " --registry " + args[1];
+        }
+        String cmdPrefix = "";
+        if (isWindows) {
+            cmdPrefix = "cmd /c ";
+        }
+        return cmdPrefix + "npm publish " + p.getParent().toString() + registry;
     }
 }
