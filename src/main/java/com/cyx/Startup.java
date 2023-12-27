@@ -34,14 +34,13 @@ public class Startup {
             HikariDataSource ds = new HikariDataSource();
             ds.setJdbcUrl("jdbc:sqlite:" + userHome + File.separator + "npm_publish_cache.db");
             BakiDao bakiDao = new BakiDao(ds);
-            bakiDao.setCheckParameterType(false);
             XQLFileManager xqlFileManager = new XQLFileManager();
             xqlFileManager.setDelimiter(";;");
             xqlFileManager.add("data", "data.sql");
             xqlFileManager.init();
             bakiDao.setXqlFileManager(xqlFileManager);
 
-            bakiDao.batchExecute(xqlFileManager.get("data.create_table").split(";"));
+            bakiDao.of("").executeBatch(xqlFileManager.get("data.create_table").split(";"));
 
             List<NpmRecord> allCache;
             try (Stream<DataRow> s = bakiDao.query("&data.all").stream()) {
@@ -67,7 +66,6 @@ public class Startup {
                                     if (idx == -1 || allCache.get(idx).getPublish().equals(0)) {
                                         NpmRecord current = idx == -1 ? new NpmRecord(name, version) : allCache.get(idx);
                                         boolean changed = false;
-                                        log.info("start push {}", packageFile);
                                         if (pkgObj.containsKey("scripts")) {
                                             pkgObj.put("scripts", Collections.emptyMap());
                                             changed = true;
@@ -80,11 +78,13 @@ public class Startup {
                                             writer.writeValue(packageFile, pkgObj);
                                         }
                                         Thread.sleep(300);
+
                                         String cmd = getCmd(args, p);
                                         Process process = runtime.exec(cmd);
+
                                         log.info("pushing {} by execute '{}'", packageFile, cmd);
 
-                                        boolean pushedSuccess = false;
+                                        boolean pushed = false;
 
                                         // + name@version
                                         InputStream infoInput = process.getInputStream();
@@ -97,16 +97,17 @@ public class Startup {
                                             try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(infoInput)))) {
                                                 String line;
                                                 while ((line = reader.readLine()) != null) {
-                                                    if (line.contains("+ ")) {
+                                                    if (line.contains("+")) {
                                                         NpmRecord npmRecord = new NpmRecord(name, version);
                                                         npmRecord.setPublish(1);
                                                         if (current.getId() == null) {
-                                                            bakiDao.insert("record").save(DataRow.fromEntity(npmRecord));
+                                                            bakiDao.insert("record").saveEntity(npmRecord);
                                                         } else {
-                                                            bakiDao.update("record", "id = :id").save(DataRow.fromEntity(npmRecord));
+                                                            bakiDao.update("record", "id = :id").saveEntity(npmRecord);
                                                         }
                                                         Printer.println(line, Color.DARK_PURPLE);
-                                                        pushedSuccess = true;
+                                                        pushed = true;
+                                                        break;
                                                     }
                                                 }
                                             } catch (Exception e) {
@@ -114,26 +115,26 @@ public class Startup {
                                             }
                                         }
                                         // not really fail, maybe inputStream is empty.
-                                        if (!pushedSuccess) {
-                                            pushedSuccess = true;
+                                        if (!pushed) {
+                                            pushed = true;
                                             try (BufferedReader reader = new BufferedReader(new InputStreamReader(new BufferedInputStream(errorInput)))) {
                                                 String line;
                                                 StringJoiner sb = new StringJoiner("\n");
                                                 while ((line = reader.readLine()) != null) {
                                                     if (line.contains("ERR!")) {
-                                                        pushedSuccess = false;
+                                                        pushed = false;
                                                         sb.add(line);
                                                     }
                                                     log.debug(line);
                                                 }
-                                                if (pushedSuccess) {
+                                                if (pushed) {
                                                     Printer.println("+ " + name + "@" + version, Color.DARK_PURPLE);
                                                 } else {
                                                     String error = sb.toString();
                                                     String reason = "";
 
                                                     if (error.contains("EPUBLISHCONFLICT") || error.contains("over existing version")) {
-                                                        reason = "(Cannot publish over existing version)";
+                                                        reason = " (Cannot publish over existing version)";
                                                     }
 
                                                     Printer.println("- " + name + "@" + version + reason, Color.SILVER);
@@ -141,13 +142,13 @@ public class Startup {
                                                         Printer.println(sb.toString(), Color.SILVER);
                                                     }
                                                 }
-                                                int published = pushedSuccess ? 1 : 0;
+                                                int published = pushed ? 1 : 0;
                                                 NpmRecord record = new NpmRecord(name, version);
                                                 record.setPublish(published);
                                                 if (current.getId() == null) {
-                                                    bakiDao.insert("record").save(DataRow.fromEntity(record));
+                                                    bakiDao.insert("record").saveEntity(record);
                                                 } else {
-                                                    bakiDao.update("record", "id = :id").save(DataRow.fromEntity(record));
+                                                    bakiDao.update("record", "id = :id").saveEntity(record);
                                                 }
                                             } catch (Exception e) {
                                                 log.error(e.toString());
